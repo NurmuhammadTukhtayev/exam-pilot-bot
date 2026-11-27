@@ -112,7 +112,7 @@ async def test_practice_flow(seeded):
         state = (await c.post("/api/quiz", json={"theme_id": theme_id, "mode": "practice", "count": 3},
                               headers=h)).json()
         assert state["total"] == 3 and state["correct_count"] == 0
-        assert set(state["question"]) == {"position", "text", "options"}  # nothing reveals the answer
+        assert set(state["question"]) == {"position", "text", "options", "number"}  # nothing reveals the answer
 
         for _ in range(3):
             q = state["question"]
@@ -175,3 +175,40 @@ async def test_stop_returns_partial_summary(seeded):
         assert summary["status"] == "stopped" and summary["answered"] == 1 and summary["base"] == 1
         assert (await c.get("/api/quiz/active", headers=h)).json() is None
         assert (await c.post("/api/quiz/stop", headers=h)).json() is None
+
+
+async def test_practice_in_order_api(seeded):
+    async with make_client(seeded) as c:
+        h = await register(c, seeded)
+        theme = (await c.get("/api/themes", headers=h)).json()[0]
+        total = theme["question_count"]
+
+        bad = await c.post("/api/quiz", json={"theme_id": theme["id"], "mode": "exam", "start": 1}, headers=h)
+        assert bad.status_code == 400 and bad.json()["detail"] == "exam_is_random"
+        bad = await c.post("/api/quiz", json={"theme_id": theme["id"], "mode": "practice", "count": 5,
+                                              "start": total + 1}, headers=h)
+        assert bad.json()["detail"] == "invalid_start"
+
+        state = (await c.post("/api/quiz", json={"theme_id": theme["id"], "mode": "practice", "count": 2,
+                                                 "start": 41}, headers=h)).json()
+        assert state["start_number"] == 41 and state["question"]["number"] == 41
+        for expected_number in (41, 42):
+            q = state["question"]
+            assert q["number"] == expected_number
+            body = (await c.post(f"/api/quiz/{state['id']}/answer",
+                                 json={"position": q["position"], "option_index": 0}, headers=h)).json()
+            state = body["state"]
+        summary = (await c.get(f"/api/quiz/{state['id']}/summary", headers=h)).json()
+        assert summary["start_number"] == 41 and summary["next_start"] == 43 and summary["next_count"] == 2
+
+        last = (await c.post("/api/quiz", json={"theme_id": theme["id"], "mode": "practice", "count": 9,
+                                                "start": total}, headers=h)).json()
+        assert last["total"] == 1                                    # capped at the end of the theme
+        await c.post(f"/api/quiz/{last['id']}/answer", json={"position": 0, "option_index": 0}, headers=h)
+        assert (await c.get(f"/api/quiz/{last['id']}/summary", headers=h)).json()["next_start"] is None
+
+        random_state = (await c.post("/api/quiz", json={"theme_id": theme["id"], "mode": "practice",
+                                                        "count": 2}, headers=h)).json()
+        assert random_state["start_number"] is None and random_state["question"]["number"] is None
+        results = (await c.get("/api/results", headers=h)).json()
+        assert [r["start_number"] for r in results[:2]] == [total, 41]

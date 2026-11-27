@@ -3,8 +3,9 @@
 Exam preparation in Telegram, available both as a classic chat bot and as a Mini App. Both share
 one database and one account per user. Users register once, pick a theme (subject), then:
 
-- **Practice**: as many questions as they want (presets or any number). Questions and answer
-  options are shuffled, and each answer is checked right away (✅/❌ + correct answer).
+- **Practice**: as many questions as they want, either **🎲 random** or **🔢 in order** from a chosen
+  question number (e.g. #41–60, then "Next 20"). Answer options are always shuffled, and each answer
+  is checked right away (✅/❌ + correct answer).
 - **Exam**: 25 random questions with shuffled options. No per-question feedback; at the end they
   see the score and a review of every mistake.
 - **Top results**: per theme, each registered user's best exam (score, then speed), top 10 + your rank.

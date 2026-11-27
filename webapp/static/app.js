@@ -362,34 +362,74 @@ function viewTheme(theme) {
 
 function viewCount(theme) {
   setBack(() => viewTheme(theme));
-  const max = theme.question_count;
-  const input = h("input", { id: "count", type: "number", inputmode: "numeric", min: 1, max, value: Math.min(10, max) });
+  const total = theme.question_count;
+  let inOrder = false;
+
+  const startInput = h("input", { id: "start", type: "number", inputmode: "numeric", min: 1, max: total, value: 1 });
+  const countInput = h("input", { id: "count", type: "number", inputmode: "numeric", min: 1, max: total, value: Math.min(10, total) });
+  const countLabel = h("label", { for: "count" });
+  const countChips = h("div", { class: "chips" });
+  const startBlock = h("div", { hidden: true },
+    h("label", { for: "start", text: tPlain("web_start_from") }), startInput);
   const error = h("div", { class: "error", role: "alert" });
-  const presets = [...PRACTICE_PRESETS.filter((n) => n < max), max];
-  const chips = presets.map((n) => h("button", {
-    type: "button",
-    text: n === max ? tPlain("all_questions", { n }) : String(n),
-    onclick: () => { input.value = n; sync(); },
-  }));
-  function sync() {
-    chips.forEach((c, i) => c.classList.toggle("active", Number(input.value) === presets[i]));
+
+  const orderChips = [
+    h("button", { type: "button", text: tPlain("order_random"), onclick: () => setOrder(false) }),
+    h("button", { type: "button", text: tPlain("order_in_order"), onclick: () => setOrder(true) }),
+  ];
+
+  // Questions available for the current choice: all of them, or those from the start number on.
+  function startNumber() {
+    const s = Number(startInput.value);
+    return Number.isInteger(s) && s >= 1 && s <= total ? s : null;
   }
-  input.addEventListener("input", sync);
-  sync();
+  function limit() { return inOrder ? total - (startNumber() || 1) + 1 : total; }
+
+  function refresh() {
+    error.textContent = "";  // any change makes an earlier validation message stale
+    const max = limit();
+    countInput.max = max;
+    countLabel.textContent = inOrder
+      ? tPlain("web_choose_count_from", { start: startNumber() || 1, max })
+      : tPlain("web_choose_count", { max });
+    const presets = [...PRACTICE_PRESETS.filter((n) => n < max), max];
+    countChips.replaceChildren(...presets.map((n) => h("button", {
+      type: "button",
+      class: Number(countInput.value) === n ? "active" : "",
+      text: n === max ? tPlain(inOrder ? "all_remaining" : "all_questions", { n }) : String(n),
+      onclick: () => { countInput.value = n; refresh(); },
+    })));
+    orderChips.forEach((c, i) => {
+      const on = (i === 1) === inOrder;
+      c.classList.toggle("active", on);
+      c.setAttribute("aria-pressed", String(on));
+    });
+    startBlock.hidden = !inOrder;
+  }
+  function setOrder(value) { inOrder = value; refresh(); }
+  startInput.addEventListener("input", refresh);
+  countInput.addEventListener("input", refresh);
+  refresh();
 
   render(
     h("h1", { text: theme.name }),
     h("form", {
+      novalidate: true,  // our translated messages instead of the browser's own tooltips
       onsubmit: (ev) => {
         ev.preventDefault();
-        const n = Number(input.value);
+        const start = inOrder ? startNumber() : null;
+        if (inOrder && !start) { error.innerHTML = t("invalid_count", { max: total }); startInput.focus(); return; }
+        const max = limit();
+        const n = Number(countInput.value);
         if (!Number.isInteger(n) || n < 1 || n > max) { error.innerHTML = t("invalid_count", { max }); return; }
-        go(() => startQuiz(theme.id, "practice", n));
+        go(() => startQuiz(theme.id, "practice", n, start ?? undefined));
       },
     },
-      h("label", { for: "count", text: tPlain("web_choose_count", { max }) }),
-      h("div", { class: "chips" }, chips),
-      input, error,
+      h("label", { text: tPlain("choose_order") }),
+      h("div", { class: "chips" }, orderChips),
+      startBlock,
+      countLabel, countChips, countInput,
+      error,
       h("button", { type: "submit", text: tPlain("web_start") })),
     backLink(),
   );
@@ -397,9 +437,9 @@ function viewCount(theme) {
 
 // ------------------------------------------------------------------ quiz
 
-async function startQuiz(themeId, mode, count) {
+async function startQuiz(themeId, mode, count, start) {
   render(spinner());
-  const state = await api("api/quiz", { method: "POST", body: { theme_id: themeId, mode, count } });
+  const state = await api("api/quiz", { method: "POST", body: { theme_id: themeId, mode, count, start } });
   viewQuestion(state);
 }
 
@@ -479,7 +519,7 @@ function viewQuestion(state) {
   render(
     h("div", { class: "qhead" },
       h("span", { text: `${modeLabel(state.mode)} · ${state.theme.name}` }),
-      h("span", { text: `${q.position + 1}/${state.total}` })),
+      h("span", { text: `${q.position + 1}/${state.total}` + (q.number ? ` · #${q.number}` : "") })),
     h("div", { class: "progress", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": state.total, "aria-valuenow": done },
       h("div", { style: `width:${(done / state.total) * 100}%` })),
     h("div", { class: "question", text: q.text }),
@@ -498,9 +538,11 @@ async function viewSummary(sessionId) {
 function renderSummary(s) {
   setBack(() => go(viewHome));
   const stopped = s.status !== "finished";
-  const again = () => go(() => startQuiz(s.theme.id, s.mode, s.mode === "practice" ? s.total : undefined));
+  const again = () => go(() => startQuiz(s.theme.id, s.mode, s.mode === "practice" ? s.total : undefined,
+    s.start_number ?? undefined));
+  const range = s.start_number ? ` · #${s.start_number}–${s.start_number + s.total - 1}` : "";
   render(
-    h("p", { html: t("result_title", { mode: modeLabel(s.mode), theme: s.theme.name }) }),
+    h("p", { html: t("result_title", { mode: modeLabel(s.mode), theme: s.theme.name }) + esc(range) }),
     h("div", { class: "card score" },
       stopped && h("p", { class: "hint", html: t("stopped") }),
       h("div", { class: "big", text: `${s.percent}%` }),
@@ -515,6 +557,10 @@ function renderSummary(s) {
           h("div", { class: "yours", text: `❌ ${tPlain("review_yours")}: ${m.chosen_letter}) ${m.chosen_text}` }),
           h("div", { class: "right", text: `✅ ${tPlain("review_correct")}: ${m.correct_letter}) ${m.correct_text}` }))),
     ],
+    s.next_start && h("button", {
+      style: "margin-top:12px", text: tPlain("next_chunk", { n: s.next_count }),
+      onclick: () => go(() => startQuiz(s.theme.id, "practice", s.next_count, s.next_start)),
+    }),
     h("div", { class: "row", style: "margin-top:12px" },
       h("button", { text: tPlain("again"), onclick: again }),
       h("button", { class: "secondary", text: tPlain("menu"), onclick: () => go(viewHome) })),
@@ -533,7 +579,8 @@ async function viewResults() {
     items.length === 0
       ? h("p", { class: "hint", text: tPlain("results_empty") })
       : h("div", { class: "list" }, items.map((r) => h("div", { class: "card" },
-        h("div", { class: "hint", text: `${new Date(r.finished_at).toLocaleDateString(textsLang)} · ${modeLabel(r.mode)}` }),
+        h("div", { class: "hint", text: `${new Date(r.finished_at).toLocaleDateString(textsLang)} · ${modeLabel(r.mode)}`
+          + (r.start_number ? ` #${r.start_number}–${r.start_number + r.total - 1}` : "") }),
         h("div", { text: r.theme_name }),
         h("strong", { text: `${r.correct}/${r.total} (${Math.round((r.correct * 100) / r.total)}%)` })))),
     backLink(),

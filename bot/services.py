@@ -161,20 +161,40 @@ async def get_theme(db: AsyncSession, theme_id: int) -> ThemeInfo | None:
     return None
 
 
+async def theme_question_ids(db: AsyncSession, theme_id: int) -> list[int]:
+    """Active question ids of a theme in document order: index 0 is question #1."""
+    return list(await db.scalars(
+        select(Question.id)
+        .where(Question.theme_id == theme_id, Question.is_active)
+        .order_by(Question.source_row, Question.id)
+    ))
+
+
 async def start_quiz(
-    db: AsyncSession, user_id: int, theme_id: int, mode: str, count: int, rng: random.Random | None = None
+    db: AsyncSession, user_id: int, theme_id: int, mode: str, count: int, rng: random.Random | None = None,
+    start: int | None = None,
 ) -> QuizSession | None:
-    """Create a session with `count` random questions (capped at what's available), each with shuffled options."""
+    """Create a session; answer options are always shuffled.
+
+    start=None: `count` random questions (capped at what's available).
+    start=N (practice only): questions #N, #N+1, ... in document order (capped at the end of the theme).
+    Returns None if there's nothing to ask (no questions, count < 1, start out of range).
+    """
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}")
+    if start is not None and mode != PRACTICE:
+        raise ValueError("'in order' is only available in practice mode")
     rng = rng or random.SystemRandom()
 
-    question_ids = list(
-        await db.scalars(select(Question.id).where(Question.theme_id == theme_id, Question.is_active))
-    )
+    question_ids = await theme_question_ids(db, theme_id)
     if not question_ids or count < 1:
         return None
-    picked = rng.sample(question_ids, min(count, len(question_ids)))
+    if start is None:
+        picked = rng.sample(question_ids, min(count, len(question_ids)))
+    else:
+        if not 1 <= start <= len(question_ids):
+            return None
+        picked = question_ids[start - 1:start - 1 + count]
 
     options = await db.execute(select(Option.question_id, Option.id).where(Option.question_id.in_(picked)))
     options_by_question: dict[int, list[int]] = {}
@@ -187,7 +207,8 @@ async def start_quiz(
         .values(status=STOPPED, finished_at=utcnow())
     )
 
-    session = QuizSession(user_id=user_id, theme_id=theme_id, mode=mode, total=len(picked), items=[])
+    session = QuizSession(user_id=user_id, theme_id=theme_id, mode=mode, total=len(picked), items=[],
+                          start_number=start)
     for position, question_id in enumerate(picked):
         order = options_by_question[question_id]
         rng.shuffle(order)

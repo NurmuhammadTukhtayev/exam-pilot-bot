@@ -59,6 +59,13 @@ if (-not (Test-Path $venvPython) -or -not (Test-Path $script)) {
     throw "Deploy the app first (deploy.ps1): $venvPython or $script is missing."
 }
 if (-not (Get-Service -Name $BotService -ErrorAction SilentlyContinue)) { throw "Service $BotService not found. Deploy first." }
+# The service runs the deploy folder's copy of dev_tunnel.py: it must be the clone's current version.
+if ((Get-FileHash $script).Hash -ne (Get-FileHash (Join-Path $SourceDir "dev_tunnel.py")).Hash) {
+    throw "The deploy folder has an older dev_tunnel.py than the git clone. Run the deploy first " +
+          "(Desktop launcher or deploy.ps1), then run this script again."
+}
+$webApp = Wait-Http "http://127.0.0.1:$Port/healthz" 10
+if (-not $webApp) { throw "The Mini App doesn't answer on http://127.0.0.1:$Port. Check the ExamPilot-WebApp service." }
 
 Write-Step "Configuring $TunnelService"
 if (-not (Get-Service -Name $TunnelService -ErrorAction SilentlyContinue)) {
@@ -99,7 +106,14 @@ for ($i = 0; $i -lt 120; $i++) {
     $current = Get-EnvValue $envFile "WEBAPP_URL"
     if ($current -match "trycloudflare\.com" -and $current -ne $before) { $url = $current; break }
 }
-if (-not $url) { throw "No tunnel URL after 2 minutes. See $log" }
+if (-not $url) {
+    # Don't leave a broken service restarting every few seconds.
+    Stop-AppServices @($TunnelService)
+    Write-Host ""
+    Write-Host "Last lines of $log :" -ForegroundColor Yellow
+    if (Test-Path $log) { Get-Content $log -Tail 25 }
+    throw "No tunnel URL after 2 minutes; $TunnelService was stopped. See the log lines above."
+}
 Write-Host "Tunnel URL: $url" -ForegroundColor Green
 
 $page = Wait-Http $url 60

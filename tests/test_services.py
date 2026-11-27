@@ -1,5 +1,7 @@
 import random
 
+import pytest
+
 from bot import services as svc
 
 
@@ -112,3 +114,24 @@ async def test_leaderboard_ranking_rules(seeded):
     assert [(e.rank, e.name, e.correct) for e in top] == [(1, "Better", 22), (2, "Fast", 20), (3, "Slow", 20)]
     assert mine.rank == 3 and mine.seconds == 600
     assert svc.format_duration(600) == "10:00" and svc.format_duration(3725) == "1:02:05"
+
+
+async def test_start_quiz_in_order(seeded):
+    async with seeded() as db:
+        theme = await _user_and_theme(db)
+        ordered = await svc.theme_question_ids(db, theme.id)
+        session = await svc.start_quiz(db, 1, theme.id, svc.PRACTICE, 20, start=41, rng=random.Random(3))
+        items = await svc.session_items(db, session.id)
+        assert [i.question_id for i in items] == ordered[40:60]               # #41..#60 in document order
+        assert session.start_number == 41 and session.question_number(5) == 46
+        # options are still shuffled (the docs list the correct answer first)
+        assert any(not svc.ordered_options(i)[0].is_correct for i in items)
+
+        tail = await svc.start_quiz(db, 1, theme.id, svc.PRACTICE, 50, start=len(ordered) - 2)
+        assert tail.total == 3                                                # capped at the end of the theme
+        assert await svc.start_quiz(db, 1, theme.id, svc.PRACTICE, 5, start=0) is None
+        assert await svc.start_quiz(db, 1, theme.id, svc.PRACTICE, 5, start=len(ordered) + 1) is None
+        with pytest.raises(ValueError):
+            await svc.start_quiz(db, 1, theme.id, svc.EXAM, 25, start=1)      # exams are always random
+        random_session = await svc.start_quiz(db, 1, theme.id, svc.PRACTICE, 5)
+        assert random_session.start_number is None and not random_session.in_order

@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 from bot import handlers
 from bot.config import Settings
 
@@ -116,6 +118,9 @@ async def test_full_practice_and_exam_flow(seeded):
     await h.press(theme_button)
     assert "Choose a mode" in h.last[0]
     await h.press(f"mode:{theme_id}:practice")
+    assert "In which order" in h.last[0]
+    assert h.buttons() == [f"order:{theme_id}:random", f"order:{theme_id}:seq", f"theme:{theme_id}"]
+    await h.press(f"order:{theme_id}:random")
     assert "How many questions" in h.last[0]
 
     await h.text("abc")
@@ -248,3 +253,56 @@ async def test_error_handler_job_errors_are_not_called_retried(caplog):
     caplog.clear()
     await handlers.on_error(None, SimpleNamespace(error=KeyError("x"), job=job))
     assert caplog.records[0].levelname == "ERROR" and caplog.records[0].exc_info
+
+
+async def test_practice_in_order(seeded):
+    """Practice "in order": pick a start number, questions come in document order, next chunk button."""
+    from bot import services as svc
+    from bot.models import Question
+
+    h = Harness(seeded)
+    await h.register()
+    theme_id = int(next(b for b in h.buttons() if b.startswith("theme:")).split(":")[1])
+    async with seeded() as db:
+        ordered = await svc.theme_question_ids(db, theme_id)
+        texts = {q.id: q.text for q in await db.scalars(select(Question).where(Question.id.in_(ordered)))}
+    total = len(ordered)
+
+    await h.press(f"mode:{theme_id}:practice")
+    await h.press(f"order:{theme_id}:seq")
+    assert "Start from which question" in h.last[0]
+    assert h.buttons()[:3] == [f"from:{theme_id}:1", f"from:{theme_id}:26", f"from:{theme_id}:51"]
+
+    # typed start number, then validation of the count against what's left from there
+    await h.text(str(total + 1))
+    assert f"from 1 to {total}" in h.last[0]
+    await h.text("41")
+    assert "How many questions from #41" in h.last[0]
+    assert f"seq:{theme_id}:41:{total - 40}" in h.buttons()          # "All remaining"
+    await h.text(str(total))                                          # more than what's left from #41
+    assert f"from 1 to {total - 40}" in h.last[0]
+    await h.text("3")
+
+    for i in range(3):
+        assert f"Question {i + 1}/3 · #{41 + i}" in h.last[0]
+        assert texts[ordered[40 + i]].split()[0] in h.last[0]       # document order: #41, #42, #43
+        await h.press(next(b for b in h.buttons() if b.startswith("ans:")))
+        if i < 2:
+            assert f"Question {i + 1}/3 · #{41 + i}" in h.chat.sent[-2][0]  # answered view keeps the number
+    assert "#41–43" in h.last[0]
+    assert h.buttons()[0] == f"again:{theme_id}:practice:3:44"        # ➡️ Next 3
+    assert f"again:{theme_id}:practice:3:41" in h.buttons()           # 🔁 Again (same chunk)
+
+    await h.press(f"again:{theme_id}:practice:3:44")
+    assert "Question 1/3 · #44" in h.last[0]
+
+    # the last chunk is capped at the end of the theme and offers no "next"
+    await h.press("stop")
+    await h.press(f"seq:{theme_id}:{total - 1}:5")
+    assert f"Question 1/2 · #{total - 1}" in h.last[0]
+    for _ in range(2):
+        await h.press(next(b for b in h.buttons() if b.startswith("ans:")))
+    assert not any(b.endswith(f":{total + 1}") for b in h.buttons())   # no next chunk after the last question
+
+    await h.command(handlers.cmd_results)
+    assert f"#{total - 1}–{total}" in h.last[0] and "#41–43" in h.last[0]

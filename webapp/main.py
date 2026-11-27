@@ -39,6 +39,7 @@ class StartQuizIn(BaseModel):
     theme_id: int
     mode: Literal["practice", "exam"]
     count: int | None = None  # practice only; exam always uses EXAM_QUESTION_COUNT
+    start: int | None = None  # practice only: first question number (document order); None = random
 
 
 class AnswerIn(BaseModel):
@@ -89,12 +90,21 @@ async def quiz_state(db: AsyncSession, session: QuizSession) -> dict:
         "total": session.total,
         "current_index": session.current_index,
         "correct_count": session.correct_count if reveal_score else None,
-        "question": question_out(item) if item else None,
+        "start_number": session.start_number,
+        "question": (
+            {**question_out(item), "number": session.question_number(item.position)} if item else None
+        ),
     }
 
 
-def summary_out(summary: svc.SessionSummary) -> dict:
+async def summary_out(db: AsyncSession, summary: svc.SessionSummary) -> dict:
     s = summary.session
+    next_start = next_count = None
+    if s.in_order:
+        theme = await svc.get_theme(db, s.theme_id)
+        if theme and s.start_number + s.total <= theme.question_count:
+            next_start = s.start_number + s.total
+            next_count = min(s.total, theme.question_count - next_start + 1)
     return {
         "id": s.id,
         "mode": s.mode,
@@ -105,6 +115,9 @@ def summary_out(summary: svc.SessionSummary) -> dict:
         "correct": s.correct_count,
         "base": summary.base,
         "percent": summary.percent,
+        "start_number": s.start_number,
+        "next_start": next_start,  # in-order practice: first question of the next chunk, if any
+        "next_count": next_count,
         "mistakes": [m.__dict__ for m in summary.mistakes] if s.mode == svc.EXAM else [],
     }
 
@@ -240,12 +253,18 @@ def create_app(settings: Settings | None = None, sessionmaker: async_sessionmake
 
     @app.post("/api/quiz")
     async def start_quiz(body: StartQuizIn, db: Db, user: ActiveUser):
-        if await svc.get_theme(db, body.theme_id) is None:
+        theme = await svc.get_theme(db, body.theme_id)
+        if theme is None:
             raise HTTPException(404, "theme_not_found")
         count = settings.exam_question_count if body.mode == svc.EXAM else body.count
         if count is None or count < 1:
             raise HTTPException(400, "invalid_count")
-        session = await svc.start_quiz(db, user.id, body.theme_id, body.mode, count)
+        if body.start is not None:
+            if body.mode == svc.EXAM:
+                raise HTTPException(400, "exam_is_random")
+            if not 1 <= body.start <= theme.question_count:
+                raise HTTPException(400, "invalid_start")
+        session = await svc.start_quiz(db, user.id, body.theme_id, body.mode, count, start=body.start)
         if session is None:
             raise HTTPException(400, "no_questions")
         await db.refresh(session, ["theme"])
@@ -273,20 +292,21 @@ def create_app(settings: Settings | None = None, sessionmaker: async_sessionmake
         session = await svc.stop_active(db, user.id)
         if session is None:
             return None
-        return summary_out(await svc.session_summary(db, session.id))
+        return await summary_out(db, await svc.session_summary(db, session.id))
 
     @app.get("/api/quiz/{session_id}/summary")
     async def quiz_summary(session_id: int, db: Db, user: ActiveUser):
         session = await own_session(db, user, session_id)
         if session.status == svc.ACTIVE:
             raise HTTPException(409, "session_active")  # no peeking at exam answers mid-exam
-        return summary_out(await svc.session_summary(db, session_id))
+        return await summary_out(db, await svc.session_summary(db, session_id))
 
     @app.get("/api/results")
     async def results(db: Db, user: ActiveUser):
         return [
             {"id": s.id, "mode": s.mode, "theme_name": s.theme.name, "correct": s.correct_count,
-             "total": s.total, "finished_at": (s.finished_at or s.started_at).isoformat()}
+             "total": s.total, "start_number": s.start_number,
+             "finished_at": (s.finished_at or s.started_at).isoformat()}
             for s in await svc.recent_results(db, user.id)
         ]
 

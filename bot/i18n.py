@@ -441,6 +441,35 @@ TEXTS.update({
                             "en": "A battle is already running here."},
 })
 
+# ---- practice: random or in order (by question number)
+TEXTS.update({
+    "choose_order": {
+        "uz": "Savollar qanday tartibda berilsin?",
+        "ru": "В каком порядке задавать вопросы?",
+        "en": "In which order should the questions come?",
+    },
+    "order_random": {"uz": "🎲 Tasodifiy", "ru": "🎲 Случайно", "en": "🎲 Random"},
+    "order_in_order": {"uz": "🔢 Tartib bo'yicha", "ru": "🔢 По порядку", "en": "🔢 In order"},
+    "choose_start": {
+        "uz": "Nechanchi savoldan boshlaysiz? Tugmani bosing yoki 1 dan {max} gacha son yuboring.",
+        "ru": "С какого вопроса начать? Нажмите кнопку или отправьте число от 1 до {max}.",
+        "en": "Start from which question? Tap a button or send a number from 1 to {max}.",
+    },
+    "choose_count_from": {
+        "uz": "#{start} dan boshlab nechta savol? Tugmani bosing yoki 1 dan {max} gacha son yuboring.",
+        "ru": "Сколько вопросов, начиная с №{start}? Нажмите кнопку или отправьте число от 1 до {max}.",
+        "en": "How many questions from #{start}? Tap a button or send a number from 1 to {max}.",
+    },
+    "all_remaining": {"uz": "Qolgan hammasi ({n})", "ru": "Все оставшиеся ({n})", "en": "All remaining ({n})"},
+    "next_chunk": {"uz": "➡️ Keyingi {n} ta", "ru": "➡️ Следующие {n}", "en": "➡️ Next {n}"},
+    "web_start_from": {"uz": "Nechanchi savoldan", "ru": "С вопроса №", "en": "Start from #"},
+    "web_choose_count_from": {
+        "uz": "#{start} dan boshlab nechta savol? (1–{max})",
+        "ru": "Сколько вопросов, начиная с №{start}? (1–{max})",
+        "en": "How many questions from #{start}? (1–{max})",
+    },
+})
+
 GROUP_COMMAND_DESCRIPTIONS = {
     "battle": {"uz": "Bellashuv boshlash", "ru": "Начать батл", "en": "Start a battle"},
     "battle_stop": {"uz": "Bellashuvni bekor qilish", "ru": "Отменить батл", "en": "Cancel the battle"},

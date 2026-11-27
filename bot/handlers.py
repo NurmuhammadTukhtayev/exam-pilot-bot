@@ -28,6 +28,7 @@ from bot.models import QuizSession, SessionQuestion, User
 log = logging.getLogger(__name__)
 
 PRACTICE_PRESETS = (10, 20, 30, 50)
+START_STEP = 25  # "start from" buttons: #1, #26, #51, ... (any number can also be typed)
 MAX_MESSAGE = 3800  # Telegram limit is 4096; keep headroom for formatting
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
@@ -169,7 +170,7 @@ def gated(handler):
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool = False) -> None:
     lang = await _lang(update, context)
-    context.user_data.pop("awaiting_count", None)
+    context.user_data.pop("awaiting", None)
     async with _db(context) as db:
         themes = await svc.list_themes(db)
         active = await svc.get_active_session(db, update.effective_user.id)
@@ -191,12 +192,22 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
     await _show(update, text, InlineKeyboardMarkup(rows), edit)
 
 
+def _range_label(session: QuizSession) -> str:
+    """'#41–60' for in-order practice, '' for random sessions."""
+    if not session.in_order:
+        return ""
+    return f"#{session.start_number}–{session.start_number + session.total - 1}"
+
+
 def _question_header(item: SessionQuestion, session: QuizSession, lang: str) -> str:
-    return t(
+    header = t(
         lang, "question_header",
         mode=_mode_label(lang, session.mode), theme=esc(session.theme.name),
         i=item.position + 1, n=session.total,
     )
+    if session.in_order:
+        header += f" · #{session.question_number(item.position)}"
+    return header
 
 
 def render_question(item: SessionQuestion, session: QuizSession, lang: str) -> tuple[str, InlineKeyboardMarkup]:
@@ -247,22 +258,29 @@ async def send_result(update: Update, context: ContextTypes.DEFAULT_TYPE, sessio
     lang = await _lang(update, context)
     async with _db(context) as db:
         summary = await svc.session_summary(db, session_id)
+        theme = await svc.get_theme(db, summary.session.theme_id)
     session = summary.session
 
-    lines = [
-        t(lang, "result_title", mode=_mode_label(lang, session.mode), theme=esc(session.theme.name)),
-        "",
-        t(lang, "result_score", c=session.correct_count, n=summary.base, p=summary.percent),
-    ]
+    title = t(lang, "result_title", mode=_mode_label(lang, session.mode), theme=esc(session.theme.name))
+    if session.in_order:
+        title += f" · {_range_label(session)}"
+    lines = [title, "", t(lang, "result_score", c=session.correct_count, n=summary.base, p=summary.percent)]
     if session.status != svc.FINISHED:
         lines.insert(0, t(lang, "stopped"))
         lines.append(t(lang, "result_answered", a=summary.answered, n=session.total))
 
     again_count = session.total if session.mode == svc.PRACTICE else 0
-    markup = InlineKeyboardMarkup([[
-        Btn(t(lang, "again"), callback_data=f"again:{session.theme_id}:{session.mode}:{again_count}"),
-        Btn(t(lang, "menu"), callback_data="menu"),
-    ]])
+    again = f"again:{session.theme_id}:{session.mode}:{again_count}"
+    rows = []
+    if session.in_order:
+        again += f":{session.start_number}"
+        next_start = session.start_number + session.total
+        if theme and next_start <= theme.question_count:
+            next_n = min(session.total, theme.question_count - next_start + 1)
+            rows.append([Btn(t(lang, "next_chunk", n=next_n),
+                             callback_data=f"again:{session.theme_id}:{svc.PRACTICE}:{next_n}:{next_start}")])
+    rows.append([Btn(t(lang, "again"), callback_data=again), Btn(t(lang, "menu"), callback_data="menu")])
+    markup = InlineKeyboardMarkup(rows)
 
     if session.mode == svc.EXAM and summary.answered:
         blocks = [t(lang, "review_title")]
@@ -285,11 +303,12 @@ async def send_result(update: Update, context: ContextTypes.DEFAULT_TYPE, sessio
 
 
 async def start_and_send(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, theme_id: int, mode: str, count: int, edit: bool
+    update: Update, context: ContextTypes.DEFAULT_TYPE, theme_id: int, mode: str, count: int, edit: bool,
+    start: int | None = None,
 ) -> None:
-    context.user_data.pop("awaiting_count", None)
+    context.user_data.pop("awaiting", None)
     async with _db(context) as db:
-        session = await svc.start_quiz(db, update.effective_user.id, theme_id, mode, count)
+        session = await svc.start_quiz(db, update.effective_user.id, theme_id, mode, count, start=start)
     if session is None:
         await show_main_menu(update, context, edit=edit)
         return
@@ -411,8 +430,9 @@ async def cmd_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         for s in sessions:
             percent = round(s.correct_count * 100 / s.total) if s.total else 0
             when = (s.finished_at or s.started_at).strftime("%d.%m.%Y")
+            chunk = f" {_range_label(s)}" if s.in_order else ""
             lines.append(
-                f"{when} · {_mode_label(lang, s.mode)} · {esc(s.theme.name)} — "
+                f"{when} · {_mode_label(lang, s.mode)}{chunk} · {esc(s.theme.name)} — "
                 f"<b>{s.correct_count}/{s.total}</b> ({percent}%)"
             )
         text = "\n".join(lines)
@@ -435,7 +455,7 @@ async def cmd_logout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     async with _db(context) as db:
         user = await _get_user(db, update)
         await svc.set_logged_in(db, user, False)
-    context.user_data.pop("awaiting_count", None)
+    context.user_data.pop("awaiting", None)
     await _show(update, t(lang, "logout_done"), None, edit=update.callback_query is not None)
 
 
@@ -506,13 +526,24 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await on_theme(update, context, int(parts[1]), lang)
     elif action == "mode":
         await on_mode(update, context, int(parts[1]), parts[2], lang)
+    elif action == "order":
+        if parts[2] == "seq":
+            await show_start_picker(update, context, int(parts[1]), lang)
+        else:
+            await show_random_count(update, context, int(parts[1]), lang)
+    elif action == "from":
+        await show_count_from(update, context, int(parts[1]), int(parts[2]), lang)
     elif action == "count":
         await start_and_send(update, context, int(parts[1]), svc.PRACTICE, int(parts[2]), edit=True)
+    elif action == "seq":
+        await start_and_send(update, context, int(parts[1]), svc.PRACTICE, int(parts[3]), edit=True,
+                             start=int(parts[2]))
     elif action == "again":
         theme_id, mode, count = int(parts[1]), parts[2], int(parts[3])
+        start = int(parts[4]) if len(parts) > 4 else None  # in-order practice (again / next chunk)
         if mode == svc.EXAM:
-            count = _exam_count(context)
-        await start_and_send(update, context, theme_id, mode, count, edit=False)
+            count, start = _exam_count(context), None
+        await start_and_send(update, context, theme_id, mode, count, edit=False, start=start)
 
 
 async def on_language_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str) -> None:
@@ -555,14 +586,59 @@ async def on_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, theme_id: 
     if mode == svc.EXAM:
         await start_and_send(update, context, theme_id, svc.EXAM, _exam_count(context), edit=True)
         return
+    # Practice: random questions, or in order starting from a chosen question number.
+    context.user_data.pop("awaiting", None)
+    markup = InlineKeyboardMarkup([
+        [Btn(t(lang, "order_random"), callback_data=f"order:{theme_id}:random"),
+         Btn(t(lang, "order_in_order"), callback_data=f"order:{theme_id}:seq")],
+        [Btn(t(lang, "back"), callback_data=f"theme:{theme_id}")],
+    ])
+    await _show(update, t(lang, "choose_order"), markup, edit=True)
 
+
+async def show_random_count(update: Update, context: ContextTypes.DEFAULT_TYPE, theme_id: int, lang: str) -> None:
+    async with _db(context) as db:
+        theme = await svc.get_theme(db, theme_id)
+    if theme is None:
+        await show_main_menu(update, context, edit=True)
+        return
     total = theme.question_count
     presets = [Btn(str(n), callback_data=f"count:{theme_id}:{n}") for n in PRACTICE_PRESETS if n < total]
     rows = [presets] if presets else []
     rows.append([Btn(t(lang, "all_questions", n=total), callback_data=f"count:{theme_id}:{total}")])
-    rows.append([Btn(t(lang, "back"), callback_data=f"theme:{theme_id}")])
-    context.user_data["awaiting_count"] = theme_id
+    rows.append([Btn(t(lang, "back"), callback_data=f"mode:{theme_id}:{svc.PRACTICE}")])
+    context.user_data["awaiting"] = ("count", theme_id)
     await _show(update, t(lang, "choose_count", max=total), InlineKeyboardMarkup(rows), edit=True)
+
+
+async def show_start_picker(update: Update, context: ContextTypes.DEFAULT_TYPE, theme_id: int, lang: str) -> None:
+    async with _db(context) as db:
+        theme = await svc.get_theme(db, theme_id)
+    if theme is None:
+        await show_main_menu(update, context, edit=True)
+        return
+    total = theme.question_count
+    starts = [Btn(f"#{s}", callback_data=f"from:{theme_id}:{s}") for s in range(1, total + 1, START_STEP)]
+    rows = [starts[i:i + 4] for i in range(0, len(starts), 4)]
+    rows.append([Btn(t(lang, "back"), callback_data=f"mode:{theme_id}:{svc.PRACTICE}")])
+    context.user_data["awaiting"] = ("start", theme_id)
+    await _show(update, t(lang, "choose_start", max=total), InlineKeyboardMarkup(rows), edit=True)
+
+
+async def show_count_from(update: Update, context: ContextTypes.DEFAULT_TYPE, theme_id: int, start: int, lang: str,
+                          edit: bool = True) -> None:
+    async with _db(context) as db:
+        theme = await svc.get_theme(db, theme_id)
+    if theme is None or not 1 <= start <= theme.question_count:
+        await show_main_menu(update, context, edit=edit)
+        return
+    remaining = theme.question_count - start + 1
+    presets = [Btn(str(n), callback_data=f"seq:{theme_id}:{start}:{n}") for n in PRACTICE_PRESETS if n < remaining]
+    rows = [presets] if presets else []
+    rows.append([Btn(t(lang, "all_remaining", n=remaining), callback_data=f"seq:{theme_id}:{start}:{remaining}")])
+    rows.append([Btn(t(lang, "back"), callback_data=f"order:{theme_id}:seq")])
+    context.user_data["awaiting"] = ("count_from", theme_id, start)
+    await _show(update, t(lang, "choose_count_from", start=start, max=remaining), InlineKeyboardMarkup(rows), edit)
 
 
 async def on_answer(
@@ -643,20 +719,30 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if await gate(update, context) is None:
         return
-    theme_id = context.user_data.get("awaiting_count")
-    if theme_id is None:
+    # A typed number answers the last practice question we asked: how many / start from which / how many from #N.
+    awaiting = context.user_data.get("awaiting")
+    if not awaiting:
         await cmd_help(update, context)
         return
+    kind, theme_id = awaiting[0], awaiting[1]
     async with _db(context) as db:
         theme = await svc.get_theme(db, theme_id)
     if theme is None:
-        context.user_data.pop("awaiting_count", None)
+        context.user_data.pop("awaiting", None)
         await show_main_menu(update, context)
         return
-    if not raw.isdigit() or not 1 <= int(raw) <= theme.question_count:
-        await update.message.reply_text(t(lang, "invalid_count", max=theme.question_count))
+    start = awaiting[2] if kind == "count_from" else 1
+    limit = theme.question_count - start + 1  # questions available from `start` on
+    if not raw.isdigit() or not 1 <= int(raw) <= limit:
+        await update.message.reply_text(t(lang, "invalid_count", max=limit))
         return
-    await start_and_send(update, context, theme_id, svc.PRACTICE, int(raw), edit=False)
+    number = int(raw)
+    if kind == "start":
+        await show_count_from(update, context, theme_id, number, lang, edit=False)
+    elif kind == "count_from":
+        await start_and_send(update, context, theme_id, svc.PRACTICE, number, edit=False, start=start)
+    else:
+        await start_and_send(update, context, theme_id, svc.PRACTICE, number, edit=False)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -109,8 +109,18 @@ class QuizSession(Base):
     total: Mapped[int] = mapped_column(Integer)
     current_index: Mapped[int] = mapped_column(Integer, default=0)
     correct_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Practice "in order": number (1-based, document order) of the first question. None = random questions.
+    start_number: Mapped[int | None] = mapped_column(Integer)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    @property
+    def in_order(self) -> bool:
+        return self.start_number is not None
+
+    def question_number(self, position: int) -> int | None:
+        """Document number (#) of the question at `position`, for in-order practice."""
+        return self.start_number + position if self.start_number is not None else None
 
     theme: Mapped[Theme] = relationship()
     items: Mapped[list["SessionQuestion"]] = relationship(
