@@ -124,6 +124,7 @@ import_docs.py  .docx → DB importer
 dev_tunnel.py   local helper: HTTPS tunnel for testing the Mini App in Telegram
 tests/
 pyproject.toml  project metadata, pytest and ruff settings
+.github/workflows/ci.yml  CI: lint, tests on Windows (3.13/3.14) and against PostgreSQL
 ```
 
 More documentation: [DEPLOY.md](DEPLOY.md) (local testing & production), [MINI_APP.md](MINI_APP.md)

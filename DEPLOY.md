@@ -198,155 +198,195 @@ changes on every restart.
 
 ## Part 3: production on Windows Server (IIS + existing PostgreSQL)
 
-The bot and the Mini App run as two Windows services (managed by [NSSM](https://nssm.cc)). IIS serves
-your domain over HTTPS and forwards requests to the Mini App, and both use your existing PostgreSQL.
+Same pattern as a typical IIS deployment: a **git clone** (e.g. `C:\MyWebApps\exam-pilot-bot`) is
+mirrored with robocopy into the **deploy folder** `C:\inetpub\exam-pilot-bot`, which is also the IIS
+site folder. The bot and the Mini App run from the deploy folder as two Windows services
+([NSSM](https://nssm.cc)), and IIS forwards your domain to the Mini App over HTTPS.
 
 ```
-Telegram ──https──► IIS (your domain, Let's Encrypt certificate via win-acme)
-                     └─ reverse proxy ──► TestBot-WebApp service (uvicorn, 127.0.0.1:8000)
-Telegram ◄──polling── TestBot-Bot service (python -m bot)
-                     both ──► PostgreSQL
+Telegram ──https──► IIS site C:\inetpub\exam-pilot-bot (web.config: proxy, Let's Encrypt via win-acme)
+                     └─► ExamPilot-WebApp service (uvicorn, 127.0.0.1:8000)
+Telegram ◄──polling── ExamPilot-Bot service (python -m bot)
+                     both ──► PostgreSQL (existing)
 ```
 
-Scripts used below live in `deploy\windows\`: `install.ps1` (once), `update.ps1` (each deploy),
-`backup.ps1` (daily), `web.config` (IIS). Run PowerShell **as Administrator** for all steps.
+One script does every deployment, first one included: **`deploy\windows\deploy.ps1`**, run from the
+git clone in an elevated PowerShell. It stops the services, mirrors the code, refreshes `web.config`,
+creates or updates `.venv` and the packages, migrates the database, imports `docs\*.docx`,
+creates or updates the services, starts them, and smoke tests the result.
 
-### 1. Install the prerequisites (once)
+Files that exist **only in the deploy folder** and are never touched by robocopy: `.env` (secrets),
+`.venv`, `logs`, `backups`, `data`, `.well-known` (win-acme).
+
+### 1. Prerequisites (once)
 
 | What | Where | Notes |
 |---|---|---|
-| Python 3.13 (64-bit) | python.org → Windows installer | Choose *Install for all users*. Remember the path, e.g. `C:\Program Files\Python313\python.exe` |
-| Git for Windows | git-scm.com | to clone and pull the code |
-| NSSM 2.24 | nssm.cc/download | unzip, e.g. to `C:\tools\nssm\` (use `win64\nssm.exe`) |
+| Python 3.13 or 3.14 (64-bit) | python.org | e.g. `C:\Users\Administrator\AppData\Local\Programs\Python\Python314\python.exe` |
+| Git for Windows | git-scm.com | |
+| NSSM 2.24 | nssm.cc/download | unzip, e.g. to `C:\tools\nssm\`, use `win64\nssm.exe` |
 | IIS URL Rewrite 2.1 | iis.net/downloads/microsoft/url-rewrite | |
 | IIS Application Request Routing 3.0 | iis.net/downloads/microsoft/application-request-routing | |
-| win-acme | win-acme.com | free Let's Encrypt certificates for IIS, renews automatically |
+| win-acme | win-acme.com | free Let's Encrypt certificates for IIS, auto-renewal |
 
-Turn on the ARR proxy (once, after installing ARR):
+Turn on the ARR proxy (once):
 
 ```powershell
 & "$env:windir\system32\inetsrv\appcmd.exe" set config -section:system.webServer/proxy /enabled:"True" /commit:apphost
 ```
 
-The server needs **outbound** HTTPS to `api.telegram.org` (the bot polls Telegram) and **inbound**
-ports **80 and 443** for IIS. Port 8000 stays internal (the Mini App only listens on 127.0.0.1).
+Network: outbound HTTPS to `api.telegram.org` (the bot polls Telegram), inbound 80 and 443 for IIS.
+Port 8000 stays internal.
 
-### 2. Create the database (once)
+### 2. Access to the private GitHub repository (once)
+
+`git clone` answers **"Repository not found"** for a private repo when the server has no access to
+it (no credentials, or a saved login of a different GitHub account, e.g. from another project).
+Use a **read-only deploy key**, which gives the server access to this one repository only:
+
+```powershell
+ssh-keygen -t ed25519 -C "exam-pilot-bot deploy" -f "$HOME\.ssh\exam_pilot_deploy"   # press Enter twice (no passphrase)
+Get-Content "$HOME\.ssh\exam_pilot_deploy.pub"                                       # copy this line
+```
+
+GitHub → repository → **Settings → Deploy keys → Add deploy key** → paste, leave *Allow write
+access* unchecked. Then tell SSH to use that key for this repo. Add to `$HOME\.ssh\config`:
+
+```
+Host github-exampilot
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/exam_pilot_deploy
+    IdentitiesOnly yes
+```
+
+Clone over SSH, using that host alias (it doesn't affect your other repositories):
+
+```powershell
+cd C:\MyWebApps
+git clone git@github-exampilot:<owner>/exam-pilot-bot.git
+```
+
+Alternative without SSH: create a fine-grained personal access token with read-only *Contents*
+permission for this repository, and enter it as the password when `git clone https://...` asks. If
+Git Credential Manager is already signed in to another account, first remove that entry from
+Windows *Credential Manager → Windows Credentials → git:https://github.com*.
+
+### 3. Database (once)
 
 In `psql` as the postgres superuser (e.g. `"C:\Program Files\PostgreSQL\17\bin\psql.exe" -U postgres`):
 
 ```sql
-CREATE ROLE testbot LOGIN PASSWORD 'choose-a-strong-password';
-CREATE DATABASE testbot OWNER testbot ENCODING 'UTF8';
+CREATE ROLE exampilot LOGIN PASSWORD 'choose-a-strong-password';
+CREATE DATABASE exampilot OWNER exampilot ENCODING 'UTF8';
 ```
 
-Use letters and digits for the password (it becomes part of a URL). The tables are created by the
-install script.
+Letters and digits only for the password (it becomes part of a URL). Tables are created by the
+deploy script.
 
-### 3. Get the code and configure (once)
+### 4. First deployment
 
 ```powershell
-git clone <your-repo-url> C:\apps\testbot
-cd C:\apps\testbot
-copy .env.example .env
-notepad .env
+cd C:\MyWebApps\exam-pilot-bot
+powershell -ExecutionPolicy Bypass -File deploy\windows\deploy.ps1
 ```
+
+The first run stops early and creates `C:\inetpub\exam-pilot-bot\.env` from the template. Fill it in:
 
 ```ini
 BOT_TOKEN=<production bot token>
-DATABASE_URL=postgresql+asyncpg://testbot:choose-a-strong-password@localhost:5432/testbot
+DATABASE_URL=postgresql+asyncpg://exampilot:choose-a-strong-password@localhost:5432/exampilot
 EXAM_QUESTION_COUNT=25
-WEBAPP_URL=https://test.example.uz/
+WEBAPP_URL=
 INIT_DATA_MAX_AGE=86400
 WEBAPP_DEV_USER_ID=
 ```
 
-`.env` stays only on the server (it's in `.gitignore`). Leave `WEBAPP_DEV_USER_ID` empty; the
-scripts refuse to run if it's set.
-
-### 4. Install the services (once)
+Leave `WEBAPP_URL` empty until HTTPS works (step 5). Then run the script again with your paths:
 
 ```powershell
-cd C:\apps\testbot
-powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1 `
-    -Python "C:\Program Files\Python313\python.exe" `
+powershell -ExecutionPolicy Bypass -File deploy\windows\deploy.ps1 `
+    -Python "C:\Users\Administrator\AppData\Local\Programs\Python\Python314\python.exe" `
     -Nssm "C:\tools\nssm\win64\nssm.exe" `
     -PostgresService "postgresql-x64-17"
 ```
 
-(`-PostgresService` is the name of your PostgreSQL Windows service; see `Get-Service *postgres*`. It
-makes our services start after the database.)
+`-PostgresService` is the PostgreSQL Windows service name (`Get-Service *postgres*`), so our services
+start after the database. Other options: `-DeployDir` (default `C:\inetpub\exam-pilot-bot`),
+`-Port` (8000), `-SkipImport`.
 
-The script creates `.venv`, installs packages, creates the tables, imports the questions from
-`docs\`, registers **TestBot-Bot** and **TestBot-WebApp** (auto-start, restart on crash, logs in
-`C:\apps\testbot\logs\`), starts them and checks that both are up.
+The chat bot now works. Send `/start` to it in Telegram.
 
 ### 5. IIS site + HTTPS (once)
 
-1. Create the site folder and copy the proxy config into it:
-   ```powershell
-   New-Item -ItemType Directory -Force C:\inetpub\testbot
-   Copy-Item C:\apps\testbot\deploy\windows\web.config C:\inetpub\testbot\
-   ```
-2. IIS Manager → **Sites → Add Website**: name `testbot`, physical path `C:\inetpub\testbot`,
-   binding **http**, port 80, host name `test.example.uz` (your domain). In *Application Pools*, set
-   the `testbot` pool's *.NET CLR version* to **No Managed Code**.
-3. Run `wacs.exe` (win-acme) as Administrator → **N** (create certificate) → pick the `testbot` site
-   → accept the defaults. It validates the domain over port 80, adds the **https** binding to the
-   site and schedules automatic renewal.
-4. Check from any browser: `https://test.example.uz/healthz` → `{"ok":true}`.
+1. IIS Manager → **Sites → Add Website**: name `exam-pilot-bot`, physical path
+   `C:\inetpub\exam-pilot-bot`, binding **http** / port 80 / host name = your domain. Set its
+   application pool's *.NET CLR version* to **No Managed Code**.
+2. Run `wacs.exe` (win-acme) as Administrator → **N** (create certificate) → choose the site → accept
+   the defaults. It validates the domain over port 80, adds the **https** binding and schedules
+   renewals.
+3. Open `https://<your-domain>/healthz` in a browser → `{"ok":true}`.
+4. Set `WEBAPP_URL=https://<your-domain>/` in `C:\inetpub\exam-pilot-bot\.env` and run `deploy.ps1`
+   again. Its smoke test now also checks the public URL, and the bot shows the **📱 Mini App**
+   button.
 
-Then restart the bot so it picks up the Mini App URL (`Restart-Service TestBot-Bot`) and check that
-`logs\bot.log` says `Mini App enabled at https://test.example.uz/`.
+Optional: @BotFather → your bot → *Bot Settings → Configure Mini App* → same URL.
 
-Optional: in @BotFather → your bot → *Bot Settings → Configure Mini App*, set the same URL.
+### Deploying updates
 
-### Deploying updates (every time)
-
-On your PC: commit and push. On the server:
+Commit and push on your PC. On the server:
 
 ```powershell
-cd C:\apps\testbot
+cd C:\MyWebApps\exam-pilot-bot
 git pull
-powershell -ExecutionPolicy Bypass -File deploy\windows\update.ps1
+powershell -ExecutionPolicy Bypass -File deploy\windows\deploy.ps1 -Python "..." -Nssm "..." -PostgresService "..."
 ```
 
-`update.ps1` stops both services, installs any new packages, applies database migrations, starts the
-services and checks them. If you added or changed question files in `docs\`, add `-ImportDocs`.
-If a step fails, the services stay stopped and the error is shown. Fix it (or go back with
-`git checkout <previous-commit>`) and run the script again.
+If a step fails, the script stops with the error and the services stay stopped. Fix it, or go back
+with `git checkout <previous-commit>` in the clone, and run the script again.
+
+`deploy.ps1` must run from inside the clone (it uses `common.ps1` next to it and the code around it).
+Don't copy it elsewhere. **One-click option:** copy `deploy\windows\desktop-deploy.example.ps1` to
+the Desktop (e.g. as `exampilot-deploy.ps1`) and set your paths at the top once. Running it as
+Administrator does `git pull` + `deploy.ps1` with those settings. It always calls the clone's
+current `deploy.ps1`, so it never goes stale.
+
+CI (`.github/workflows/ci.yml`) runs lint, the tests on Windows (Python 3.13 and 3.14) and the
+tests against PostgreSQL on every push. Check it's green before you deploy. To automate deployment
+later, add a job on a self-hosted Windows runner that checks out the code and runs `deploy.ps1`.
 
 ### Everyday operations
 
 | Task | Command |
 |---|---|
-| Status | `Get-Service TestBot-*` |
-| Restart | `Restart-Service TestBot-Bot, TestBot-WebApp` |
-| Live logs | `Get-Content C:\apps\testbot\logs\bot.log -Tail 50 -Wait` (same for `webapp.log`) |
-| Stop / start | `Stop-Service TestBot-*` / `Start-Service TestBot-*` |
-| Remove the services | `nssm remove TestBot-Bot confirm` and `nssm remove TestBot-WebApp confirm` |
+| Status | `Get-Service ExamPilot-*` |
+| Restart | `Restart-Service ExamPilot-Bot, ExamPilot-WebApp` |
+| Live logs | `Get-Content C:\inetpub\exam-pilot-bot\logs\bot.log -Tail 50 -Wait` (and `webapp.log`) |
+| Stop / start | `Stop-Service ExamPilot-*` / `Start-Service ExamPilot-*` |
+| Remove the services | `nssm remove ExamPilot-Bot confirm`, `nssm remove ExamPilot-WebApp confirm` |
 
-Logs rotate automatically at 10 MB.
+Logs rotate at 10 MB.
 
 ### Backups
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\apps\testbot\deploy\windows\backup.ps1 `
-    -PgDump "C:\Program Files\PostgreSQL\17\bin\pg_dump.exe" -Destination "D:\backups\testbot"
+powershell -ExecutionPolicy Bypass -File C:\MyWebApps\exam-pilot-bot\deploy\windows\backup.ps1 `
+    -PgDump "C:\Program Files\PostgreSQL\17\bin\pg_dump.exe" -Destination "D:\backups\exam-pilot-bot"
 ```
 
-It keeps 14 days by default (`-KeepDays`). To run it daily, create a Task Scheduler task with
-*Program* `powershell.exe` and *Arguments* `-ExecutionPolicy Bypass -File C:\apps\testbot\deploy\windows\backup.ps1 -PgDump "..." -Destination "..."`, set to run whether the
-user is logged on or not. Copy backups off the server too. Restore with
-`pg_restore -U testbot -d testbot --clean <file>.dump`.
+Keeps 14 days (`-KeepDays`). Schedule it daily in Task Scheduler (*Program* `powershell.exe`,
+*Arguments* `-ExecutionPolicy Bypass -File C:\MyWebApps\exam-pilot-bot\deploy\windows\backup.ps1 -PgDump "..." -Destination "..."`,
+run whether the user is logged on or not), and copy backups off the server. Restore:
+`pg_restore -U exampilot -d exampilot --clean <file>.dump`.
 
 ### Troubleshooting (Windows)
 
 | Symptom | Likely cause |
 |---|---|
-| `https://domain/healthz` gives **502.3** | The TestBot-WebApp service isn't running. See `logs\webapp.log`. |
-| IIS shows its own 404/500 page for everything | ARR proxy not enabled (step 1 `appcmd` command), or URL Rewrite/ARR not installed. |
-| win-acme validation fails | DNS doesn't point at the server yet, or port 80 is blocked by a firewall. |
-| `Conflict: terminated by other getUpdates request` in `bot.log` | The same token is also running on your PC. Stop it there. |
-| `update.ps1` fails at "Installing Python packages" with access denied | A service was still running. Run `Stop-Service TestBot-*` and retry. |
-| Garbled/missing characters in logs | Services get `PYTHONUTF8=1` from `install.ps1`; rerun it if you created the services by hand. |
+| `git clone`: *Repository not found* | No access to the private repo from the server. See step 2. |
+| `https://domain/healthz` → **502.3** | ExamPilot-WebApp isn't running. See `logs\webapp.log`. |
+| IIS shows its own 404/500 page for every URL | ARR proxy not enabled (`appcmd` in step 1), or URL Rewrite/ARR missing. |
+| win-acme validation fails | DNS doesn't point at the server yet, or port 80 is blocked. |
+| `Conflict: terminated by other getUpdates request` in `bot.log` | The same bot token also runs on your PC. Stop it there. |
+| pip "access denied" during deploy | A process still uses `.venv`. Run `Stop-Service ExamPilot-*` and retry. |
+| Garbled characters in logs | The services get `PYTHONUTF8=1` from `deploy.ps1`; rerun it if you created them by hand. |

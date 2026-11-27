@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Ruff
+        run: ruff check .
+
+  windows-tests:
+    # Production runs on Windows Server, so the suite is proved on Windows too.
+    # 3.14 is the interpreter on the server; 3.13 is what development uses.
+    runs-on: windows-latest
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Tests (SQLite, Windows, Python ${{ matrix.python-version }})
+        run: python -m pytest -q
+      - name: Deploy scripts parse (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $bad = 0
+          foreach ($f in Get-ChildItem deploy\windows\*.ps1) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { $bad++; $errors | ForEach-Object { Write-Host "$($f.Name):$($_.Extent.StartLineNumber) $($_.Message)" } }
+            if ([IO.File]::ReadAllBytes($f.FullName) | Where-Object { $_ -gt 127 }) { $bad++; Write-Host "$($f.Name): non-ASCII characters (breaks PowerShell 5.1)" }
+          }
+          [xml](Get-Content deploy\windows\web.config -Raw) | Out-Null
+          if ($bad) { throw "$bad problem(s) in deploy scripts" }
+
+  postgres-tests:
+    # Production uses PostgreSQL: run the whole suite (incl. migrations) against a real server.
+    runs-on: ubuntu-latest
+    needs: lint
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: testbot
+          POSTGRES_PASSWORD: testbot
+          POSTGRES_DB: testbot
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U testbot -d testbot"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://testbot:testbot@localhost:5432/testbot
+      DATABASE_URL: postgresql+asyncpg://testbot:testbot@localhost:5432/testbot
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Tests (PostgreSQL 17)
+        run: python -m pytest -q
+      - name: Migrations match the models
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
+      - name: Question import
+        run: python import_docs.py

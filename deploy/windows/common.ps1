@@ -1,12 +1,10 @@
-# Shared helpers for install.ps1 / update.ps1 / backup.ps1 (Windows PowerShell 5.1+).
+# Shared helpers for deploy.ps1 / backup.ps1 (Windows PowerShell 5.1+).
 # Keep this file ASCII-only: PowerShell 5.1 reads BOM-less scripts in the ANSI code page.
 
 $ErrorActionPreference = "Stop"
 
-# Repository root = two folders up from deploy\windows
-$Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
-$LogDir = Join-Path $Root "logs"
+# The git clone these scripts live in = two folders up from deploy\windows
+$SourceDir = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 function Assert-Admin {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -29,38 +27,28 @@ function Invoke-Checked([string]$Exe, [string[]]$Arguments) {
     }
 }
 
-function Assert-EnvFile {
-    $envFile = Join-Path $Root ".env"
+# Value of KEY=value in a .env file ("" if missing).
+function Get-EnvValue([string]$EnvFile, [string]$Key) {
+    $line = Select-String -Path $EnvFile -Pattern "^$Key=" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $line) { return "" }
+    return $line.Line.Substring($Key.Length + 1).Trim()
+}
+
+# The production .env lives in the deploy folder (never in git, never touched by robocopy).
+function Assert-EnvFile([string]$DeployDir) {
+    $envFile = Join-Path $DeployDir ".env"
     if (-not (Test-Path $envFile)) {
-        Copy-Item (Join-Path $Root ".env.example") $envFile
+        New-Item -ItemType Directory -Force -Path $DeployDir | Out-Null
+        Copy-Item (Join-Path $SourceDir ".env.example") $envFile
         throw "Created $envFile from the template. Fill in BOT_TOKEN, DATABASE_URL and WEBAPP_URL, then run again."
     }
-    $content = Get-Content $envFile -Raw
-    if ($content -notmatch "(?m)^BOT_TOKEN=\S+") { throw "BOT_TOKEN is empty in $envFile" }
-    if ($content -notmatch "(?m)^DATABASE_URL=postgresql\+asyncpg://") {
+    if (-not (Get-EnvValue $envFile "BOT_TOKEN")) { throw "BOT_TOKEN is empty in $envFile" }
+    if ((Get-EnvValue $envFile "DATABASE_URL") -notmatch "^postgresql\+asyncpg://") {
         throw "DATABASE_URL in $envFile must be postgresql+asyncpg://user:password@host:5432/dbname"
     }
-    if ($content -match "(?m)^WEBAPP_DEV_USER_ID=\S+") {
+    if (Get-EnvValue $envFile "WEBAPP_DEV_USER_ID") {
         throw "WEBAPP_DEV_USER_ID is set in $envFile. Remove it: it is for local development only."
     }
-}
-
-function Install-Dependencies {
-    Write-Step "Installing Python packages"
-    Invoke-Checked $VenvPython @("-m", "pip", "install", "--upgrade", "pip", "--quiet")
-    Invoke-Checked $VenvPython @("-m", "pip", "install", "-r", (Join-Path $Root "requirements.txt"), "--quiet")
-}
-
-function Update-Database {
-    Write-Step "Applying database migrations"
-    Push-Location $Root
-    try { Invoke-Checked $VenvPython @("-m", "alembic", "upgrade", "head") } finally { Pop-Location }
-}
-
-function Import-Questions {
-    Write-Step "Importing questions from docs\*.docx"
-    Push-Location $Root
-    try { Invoke-Checked $VenvPython @("import_docs.py") } finally { Pop-Location }
 }
 
 function Stop-AppServices([string[]]$Names) {
@@ -69,42 +57,18 @@ function Stop-AppServices([string[]]$Names) {
         if ($svc -and $svc.Status -ne "Stopped") {
             Write-Host "Stopping $name"
             Stop-Service -Name $name
-            $svc.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
         }
     }
 }
 
-function Start-AppServices([string[]]$Names) {
-    foreach ($name in $Names) {
-        Write-Host "Starting $name"
-        Start-Service -Name $name
-    }
-}
-
-# Wait for the Mini App health endpoint and check the bot service stays up.
-function Test-Deployment([int]$Port, [string]$BotService) {
-    Write-Step "Checking the deployment"
-    $url = "http://127.0.0.1:$Port/healthz"
-    $healthy = $false
-    for ($i = 0; $i -lt 30; $i++) {
+# GET a URL; returns the response, or $null after $Seconds of failures.
+function Wait-Http([string]$Url, [int]$Seconds = 30) {
+    for ($i = 0; $i -lt $Seconds; $i++) {
         try {
-            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3
-            if ($response.StatusCode -eq 200) { $healthy = $true; break }
-        } catch { Start-Sleep -Seconds 1 }
+            $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
+            if ($response.StatusCode -eq 200) { return $response }
+        } catch { }
+        Start-Sleep -Seconds 1
     }
-    if ($healthy) { Write-Host "Mini App: OK ($url)" -ForegroundColor Green }
-    else { Write-Host "Mini App: NOT responding on $url. See logs\webapp.log" -ForegroundColor Red }
-
-    Start-Sleep -Seconds 5
-    $bot = Get-Service -Name $BotService
-    if ($bot.Status -eq "Running") { Write-Host "Bot: running" -ForegroundColor Green }
-    else { Write-Host "Bot: $($bot.Status). See logs\bot.log" -ForegroundColor Red }
-
-    $botLog = Join-Path $LogDir "bot.log"
-    if (Test-Path $botLog) {
-        Write-Host ""
-        Write-Host "Last lines of logs\bot.log:"
-        Get-Content $botLog -Tail 8
-    }
-    if (-not $healthy -or $bot.Status -ne "Running") { throw "Deployment check failed." }
+    return $null
 }
