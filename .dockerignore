@@ -1,0 +1,16 @@
+# Keep the production image small and free of secrets/local data
+.git
+.venv
+.vscode
+.idea
+.env
+deploy/.env
+data
+backups
+*.dump
+**/__pycache__
+.pytest_cache
+.ruff_cache
+tests
+*.md
+!README.md

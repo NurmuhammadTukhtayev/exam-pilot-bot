@@ -1,0 +1,9 @@
+python-telegram-bot[job-queue,rate-limiter]==22.8
+SQLAlchemy[asyncio]==2.1.9
+aiosqlite==0.22.1
+asyncpg==0.32.0
+python-docx==1.2.0
+python-dotenv==1.2.4
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
+alembic==1.20.1

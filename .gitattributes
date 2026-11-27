@@ -1,0 +1,13 @@
+# Normalize line endings: LF in the repository (the server is Linux), native on checkout.
+* text=auto eol=lf
+
+# Windows-only helpers keep CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files: never touch
+*.docx binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.db binary

@@ -1,0 +1,66 @@
+# Production stack:  docker compose -f deploy/docker-compose.prod.yml up -d --build
+# Settings come from deploy/.env (see deploy/.env.example).
+name: testbot
+
+x-app: &app
+  build: ..
+  image: testbot-app
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql+asyncpg://testbot:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/testbot
+    WEBAPP_URL: https://${DOMAIN:?set DOMAIN in deploy/.env}/
+    WEBAPP_DEV_USER_ID: ""
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: testbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: testbot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testbot -d testbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  bot:
+    <<: *app
+    command: ["python", "-m", "bot"]
+
+  webapp:
+    <<: *app
+    command: ["uvicorn", "webapp.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - webapp
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

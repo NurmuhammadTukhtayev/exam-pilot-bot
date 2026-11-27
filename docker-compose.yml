@@ -1,0 +1,16 @@
+# Local PostgreSQL for trying the production database setup:
+#   docker compose up -d
+#   DATABASE_URL=postgresql+asyncpg://testbot:testbot@localhost:5432/testbot
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: testbot
+      POSTGRES_PASSWORD: testbot
+      POSTGRES_DB: testbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
