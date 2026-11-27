@@ -46,6 +46,13 @@ Assert-EnvFile $DeployDir
 if (-not (Get-Command $Nssm -ErrorAction SilentlyContinue)) {
     throw "nssm.exe not found ('$Nssm'). Download it from https://nssm.cc/download and pass -Nssm <path>."
 }
+if ($PostgresService -and -not (Get-Service -Name $PostgresService -ErrorAction SilentlyContinue)) {
+    $found = @(Get-Service -Name "*postgres*" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    $hint = "No PostgreSQL Windows service found on this server (database on another machine?)."
+    if ($found.Count) { $hint = "PostgreSQL services on this server: $($found -join ', ')." }
+    throw "PostgreSQL service '$PostgresService' doesn't exist. $hint " +
+          "Pass the right name with -PostgresService, or leave it empty to skip the start-order dependency."
+}
 if ($SourceDir.TrimEnd("\") -ieq $DeployDir.TrimEnd("\")) {
     throw "Run this from the git clone, not from the deploy folder ($DeployDir)."
 }
@@ -85,6 +92,9 @@ Invoke-Checked $VenvPython @("-m", "pip", "install", "-r", (Join-Path $DeployDir
 Write-Step "5/7 Database"
 Push-Location $DeployDir
 try {
+    # Clear message for a wrong DATABASE_URL (instead of a long traceback from the migration)
+    & $VenvPython -m bot.dbcheck
+    if ($LASTEXITCODE -ne 0) { throw "Fix DATABASE_URL in $DeployDir\.env and run the deploy again." }
     Invoke-Checked $VenvPython @("-m", "alembic", "upgrade", "head")
     if (-not $SkipImport) { Invoke-Checked $VenvPython @("import_docs.py") }
 } finally { Pop-Location }

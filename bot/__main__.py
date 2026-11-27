@@ -24,6 +24,8 @@ from bot.i18n import COMMAND_DESCRIPTIONS, DEFAULT_LANGUAGE, GROUP_COMMAND_DESCR
 def main() -> None:
     logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # The battle watchdog runs every few seconds; don't log each run (warnings/errors still show).
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
     settings = get_settings()
     if not settings.bot_token:

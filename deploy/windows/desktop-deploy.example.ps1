@@ -12,7 +12,9 @@ $Clone           = "C:\MyWebApps\exam-pilot-bot"     # git clone
 $DeployDir       = "C:\inetpub\exam-pilot-bot"       # IIS site folder the app runs from
 $Python          = "C:\Users\Administrator\AppData\Local\Programs\Python\Python314\python.exe"
 $Nssm            = "C:\tools\nssm-2.24\win64\nssm.exe"
-$PostgresService = "postgresql-x64-17"               # Get-Service *postgres*  ("" to skip)
+# Optional: the PostgreSQL Windows service, so our services start after it after a reboot.
+# Find the name with:  Get-Service *postgres*   (leave "" if PostgreSQL runs on another machine)
+$PostgresService = ""
 # ---------------------------------------------------------------------------------------------------
 
 $ErrorActionPreference = "Stop"

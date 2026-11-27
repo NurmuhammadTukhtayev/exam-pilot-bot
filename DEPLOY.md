@@ -317,6 +317,37 @@ start after the database. Other options: `-DeployDir` (default `C:\inetpub\exam-
 
 The chat bot now works. Send `/start` to it in Telegram.
 
+### Before the domain works: temporary HTTPS (optional)
+
+The chat bot works without a domain; only the Mini App needs HTTPS. Until your domain is active
+(e.g. a new `.uz` domain waiting for registry activation), run a **Cloudflare quick tunnel** as a
+third service. No open ports, DNS or certificate are needed.
+
+1. Download `cloudflared-windows-amd64.exe` from
+   `https://github.com/cloudflare/cloudflared/releases/latest` and save it as
+   `C:\tools\cloudflared\cloudflared.exe`.
+2. Install the tunnel service (from the git clone, as Administrator):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File deploy\windows\temp-tunnel.ps1 `
+       -Nssm "C:\tools\nssm-2.24\win64\nssm.exe" -Cloudflared "C:\tools\cloudflared\cloudflared.exe"
+   ```
+   It starts **ExamPilot-Tunnel**, writes the tunnel address (`https://<random>.trycloudflare.com/`)
+   into `.env` as `WEBAPP_URL` and restarts the bot. The 📱 Mini App button then works. Close and
+   reopen the chat in Telegram.
+
+The address changes whenever the tunnel restarts (reboot, network drop). The service then updates
+`.env` and restarts the bot by itself. Buttons in *old* messages keep the previous address; send
+`/start` for a fresh menu. Quick tunnels are for testing and have no uptime guarantee, so switch
+to the domain as soon as it works. `deploy.ps1` keeps working meanwhile (the tunnel survives
+deploys).
+
+**Switching to the domain:** remove the tunnel first (otherwise it overwrites `WEBAPP_URL` again),
+then do step 5 below:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\windows\temp-tunnel.ps1 -Nssm "C:\tools\nssm-2.24\win64\nssm.exe" -Remove
+```
+
 ### 5. IIS site + HTTPS (once)
 
 1. IIS Manager → **Sites → Add Website**: name `exam-pilot-bot`, physical path
@@ -384,6 +415,7 @@ run whether the user is logged on or not), and copy backups off the server. Rest
 | Symptom | Likely cause |
 |---|---|
 | `git clone`: *Repository not found* | No access to the private repo from the server. See step 2. |
+| `DATABASE PROBLEM: ...` at step 5/7 | `DATABASE_URL` in the deploy folder's `.env` is wrong; the message says what (unknown host, `@` in the password, wrong password, missing database...). Check it anytime: `cd C:\inetpub\exam-pilot-bot; .venv\Scripts\python -m bot.dbcheck` |
 | `https://domain/healthz` → **502.3** | ExamPilot-WebApp isn't running. See `logs\webapp.log`. |
 | IIS shows its own 404/500 page for every URL | ARR proxy not enabled (`appcmd` in step 1), or URL Rewrite/ARR missing. |
 | win-acme validation fails | DNS doesn't point at the server yet, or port 80 is blocked. |
