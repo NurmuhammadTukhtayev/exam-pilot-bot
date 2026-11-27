@@ -69,7 +69,8 @@ def clean_text(value: str) -> str:
 def theme_name_from_path(path: Path) -> str:
     name = path.stem.replace("_", " ").replace("`", "'")
     name = re.sub(r"^\s*\d+\s*-?\s*kurs\s+", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"\s+KT\s+uz\s+[IVXLC]+\s*$", "", name, flags=re.IGNORECASE)
+    # "... KT uz IX" (course docs) or just "... KT uz" (non-course docs, e.g. "SQL KT uz.docx")
+    name = re.sub(r"\s+KT\s+uz(\s+[IVXLC]+)?\s*$", "", name, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", name).strip() or path.stem
 
 

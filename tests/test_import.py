@@ -20,6 +20,10 @@ def test_theme_names():
         == "Bulutli texnologiyalar va taqsimlangan tizimlar"
     )
     assert theme_name_from_path(Path("Something else.docx")) == "Something else"
+    # non-course docs: no "N-Kurs" prefix and no Roman numeral
+    assert theme_name_from_path(Path("SQL KT uz.docx")) == "SQL"
+    assert theme_name_from_path(Path("Python asoslari KT uz.docx")) == "Python asoslari"
+    assert theme_name_from_path(Path("SQL.docx")) == "SQL"
 
 
 def test_parse_fixture_docs():

@@ -371,13 +371,13 @@ server.
 
 1. Copy the file(s) there (e.g. through Remote Desktop: copy on your PC, paste in Explorer on the
    server). Keep the naming pattern, since the theme name comes from the file name:
-   `5-Kurs SQL KT uz IX.docx` → theme **SQL**.
+   `SQL KT uz.docx` → theme **SQL**; course files like `5-Kurs <Name> KT uz IX.docx` → theme **<Name>**.
 2. Import: run the Desktop launcher (every deploy imports all files in `docs`), or import right
    away without a deploy:
    ```powershell
    cd C:\inetpub\exam-pilot-bot
-   .venv\Scripts\python import_docs.py --dry-run "docs\5-Kurs SQL KT uz IX.docx"   # check first
-   .venv\Scripts\python import_docs.py "docs\5-Kurs SQL KT uz IX.docx"
+   .venv\Scripts\python import_docs.py --dry-run "docs\SQL KT uz.docx"   # check first
+   .venv\Scripts\python import_docs.py "docs\SQL KT uz.docx"
    ```
    New themes and questions appear in the bot immediately; no restart is needed.
 
