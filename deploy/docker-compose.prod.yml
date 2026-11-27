@@ -7,6 +7,9 @@ x-app: &app
   image: testbot-app
   restart: unless-stopped
   env_file: .env
+  volumes:
+    # Question banks are not in git: put the *.docx files into docs/ on the server.
+    - ../docs:/app/docs:ro
   environment:
     DATABASE_URL: postgresql+asyncpg://testbot:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/testbot
     WEBAPP_URL: https://${DOMAIN:?set DOMAIN in deploy/.env}/

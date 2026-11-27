@@ -17,7 +17,8 @@
     7. smoke test: local health check, public URL (WEBAPP_URL), bot service running
 
   Server-only files in the deploy folder that robocopy must never delete or overwrite:
-    .env (secrets), .venv, logs, backups, data, .well-known (win-acme certificate checks)
+    .env (secrets), .venv, logs, backups, data, .well-known (win-acme certificate checks),
+    docs (the question banks *.docx are not in git: copy them into <DeployDir>\docs yourself)
 #>
 param(
     # IIS site folder = where the app runs from
@@ -71,7 +72,7 @@ Stop-AppServices @($BotService, $WebService)
 Write-Step "2/7 Syncing code (robocopy /MIR)"
 robocopy $SourceDir $DeployDir /MIR /R:2 /W:2 /NFL /NDL /NP /NJH `
     /XD .git .github .venv venv __pycache__ .pytest_cache .ruff_cache .vscode .idea `
-        logs backups data .well-known tests `
+        logs backups data docs .well-known tests `
     /XF .env web.config *.pyc
 $rc = $LASTEXITCODE
 if ($rc -ge 8) { throw "Robocopy failed with exit code $rc" }
@@ -96,7 +97,17 @@ try {
     & $VenvPython -m bot.dbcheck
     if ($LASTEXITCODE -ne 0) { throw "Fix DATABASE_URL in $DeployDir\.env and run the deploy again." }
     Invoke-Checked $VenvPython @("-m", "alembic", "upgrade", "head")
-    if (-not $SkipImport) { Invoke-Checked $VenvPython @("import_docs.py") }
+    if (-not $SkipImport) {
+        # The question banks live only on the server (not in git); the import is idempotent.
+        $docsDir = Join-Path $DeployDir "docs"
+        New-Item -ItemType Directory -Force -Path $docsDir | Out-Null
+        if (Get-ChildItem $docsDir -Filter "*.docx" | Where-Object { $_.Name -notlike '~$*' }) {
+            Invoke-Checked $VenvPython @("import_docs.py")
+        } else {
+            Write-Host "No question files in $docsDir - skipping the import. Copy the *.docx files there." `
+                -ForegroundColor Yellow
+        }
+    }
 } finally { Pop-Location }
 
 Write-Step "6/7 Services"

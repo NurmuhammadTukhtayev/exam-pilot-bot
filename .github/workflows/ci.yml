@@ -102,5 +102,3 @@ jobs:
         run: |
           python -m alembic upgrade head
           python -m alembic check
-      - name: Question import
-        run: python import_docs.py

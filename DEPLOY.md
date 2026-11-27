@@ -108,8 +108,8 @@ sudo usermod -aG docker $USER      # log out and back in afterwards
 git clone <your-repo-url> testbot && cd testbot
 ```
 
-(Or copy the project folder with `scp`/WinSCP. The question `.docx` files in `docs/` are needed for
-the import.)
+(Or copy the project folder with `scp`/WinSCP.) The question `.docx` files are not in git: copy them
+into the `docs/` folder on the server (e.g. with `scp` or WinSCP). The containers read them from there.
 
 ### 3. Configure
 
@@ -216,7 +216,8 @@ creates or updates `.venv` and the packages, migrates the database, imports `doc
 creates or updates the services, starts them, and smoke tests the result.
 
 Files that exist **only in the deploy folder** and are never touched by robocopy: `.env` (secrets),
-`.venv`, `logs`, `backups`, `data`, `.well-known` (win-acme).
+`.venv`, `logs`, `backups`, `data`, `.well-known` (win-acme), and `docs` (the question banks, which
+are not in git; see *Adding or updating question banks* below).
 
 ### 1. Prerequisites (once)
 
@@ -362,6 +363,26 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\temp-tunnel.ps1 -Nssm "C
    button.
 
 Optional: @BotFather → your bot → *Bot Settings → Configure Mini App* → same URL.
+
+### Adding or updating question banks
+
+The `.docx` question files are not in git. They live in **`C:\inetpub\exam-pilot-bot\docs\`** on the
+server.
+
+1. Copy the file(s) there (e.g. through Remote Desktop: copy on your PC, paste in Explorer on the
+   server). Keep the naming pattern, since the theme name comes from the file name:
+   `5-Kurs SQL KT uz IX.docx` → theme **SQL**.
+2. Import: run the Desktop launcher (every deploy imports all files in `docs`), or import right
+   away without a deploy:
+   ```powershell
+   cd C:\inetpub\exam-pilot-bot
+   .venv\Scripts\python import_docs.py --dry-run "docs\5-Kurs SQL KT uz IX.docx"   # check first
+   .venv\Scripts\python import_docs.py "docs\5-Kurs SQL KT uz IX.docx"
+   ```
+   New themes and questions appear in the bot immediately; no restart is needed.
+
+Re-importing is safe: changed answers are updated, and questions removed from a file are deactivated
+(past results stay valid). Deleting a file from `docs` doesn't remove its theme.
 
 ### Deploying updates
 

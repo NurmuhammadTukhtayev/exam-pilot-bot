@@ -1,11 +1,12 @@
 from pathlib import Path
 
 import docx
+import pytest
 from sqlalchemy import func, select
 
 from bot.models import Option, Question, Theme
 from import_docs import import_parsed, parse_docx, theme_name_from_path
-from tests.conftest import DOCS
+from tests.conftest import DOCS, REAL_DOCS
 
 
 def test_theme_names():
@@ -21,13 +22,23 @@ def test_theme_names():
     assert theme_name_from_path(Path("Something else.docx")) == "Something else"
 
 
-def test_parse_real_docs():
+def test_parse_fixture_docs():
     counts = {p.name: len(parse_docx(p).questions) for p in DOCS}
     assert sum(counts.values()) == 547
     for path in DOCS:
         parsed = parse_docx(path)
         assert not parsed.warnings
         assert all(len(q.options) == 4 for q in parsed.questions)
+
+
+@pytest.mark.skipif(not REAL_DOCS, reason="real question banks (docs/*.docx) are not in git")
+@pytest.mark.parametrize("path", REAL_DOCS, ids=lambda p: p.name)
+def test_real_docs_parse_cleanly(path):
+    """When the real docs are present locally: every row is a valid question, nothing skipped."""
+    parsed = parse_docx(path)
+    assert parsed.questions, "no questions found"
+    assert not parsed.warnings, parsed.warnings
+    assert all(len(q.options) >= 2 for q in parsed.questions)
 
 
 def _make_doc(path: Path, rows: list[list[str]]) -> Path:

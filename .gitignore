@@ -40,7 +40,8 @@ backups/
 logs/
 *.log
 
-# ---- question documents: Word/LibreOffice lock files (the .docx files themselves are committed)
+# ---- question banks: kept out of git (they contain the answers); copied to the server separately
+docs/*.docx
 docs/~$*
 docs/.~lock.*
 

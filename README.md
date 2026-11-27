@@ -34,8 +34,12 @@ copy .env.example .env          # then set BOT_TOKEN (from @BotFather) and DATAB
 ## Importing questions
 
 Put `.docx` files in `docs/`. Each file is a table: **column 1 = question, column 2 = correct
-answer, remaining columns = wrong answers**. Each file becomes one theme, named from the file name
-(`5-Kurs Dasturiy tizimlarni loyihalash KT uz IX.docx` → `Dasturiy tizimlarni loyihalash`).
+answer, remaining columns = wrong answers** (no header row). Each file becomes one theme, named from
+the file name (`5-Kurs Dasturiy tizimlarni loyihalash KT uz IX.docx` → `Dasturiy tizimlarni loyihalash`).
+
+The question files are **not in git** (`docs/*.docx` is ignored, since they contain the answers).
+Keep them locally and copy them to the server's `docs` folder (see [DEPLOY.md](DEPLOY.md)). Tests use
+generated question banks, so the suite and CI run without them.
 
 ```bash
 python import_docs.py                                  # all .docx in docs/
